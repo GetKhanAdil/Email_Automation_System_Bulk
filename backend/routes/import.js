@@ -28,6 +28,7 @@ const COLUMN_ALIASES = {
   brochure_link: ["brochure", "brochure link", "placement brochure"],
   linkedin: ["linkedin", "linkedin url", "company linkedin"],
   industry: ["industry", "sector"],
+  company_info: ["company info", "company description", "about", "description", "about company"],
   city: ["city"],
   state: ["state"],
   country: ["country"],

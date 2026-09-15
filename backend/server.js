@@ -14,6 +14,7 @@ import analyticsRouter from "./routes/analytics.js";
 import draftsRouter from "./routes/drafts.js";
 import companiesRouter from "./routes/companies.js";
 import repliesRouter from "./routes/replies.js";
+import aiRouter from "./routes/ai.js";
 import { startScheduler } from "./scheduler.js";
 import { startReplyPoller } from "./replyPoller.js";
 
@@ -47,6 +48,7 @@ app.use("/api/analytics", analyticsRouter);
 app.use("/api/drafts", draftsRouter);
 app.use("/api/companies", companiesRouter);
 app.use("/api/replies", repliesRouter);
+app.use("/api/ai", aiRouter);
 
 // Serve frontend build if present (production single-server mode)
 const clientDist = join(__dirname, "..", "frontend", "dist");

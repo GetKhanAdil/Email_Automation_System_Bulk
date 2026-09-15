@@ -50,6 +50,8 @@ export default function FollowUps() {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [thread, setThread] = useState(null);
+  const [suggesting, setSuggesting] = useState(false);
+  const [classifying, setClassifying] = useState(false);
   const [replyText, setReplyText] = useState("");
   const [replying, setReplying] = useState(false);
 
@@ -154,6 +156,35 @@ export default function FollowUps() {
     }
   };
 
+  // AI: draft a suggested reply into the reply box (user reviews/edits, then sends).
+  const suggestReply = async () => {
+    if (!thread?.id) return;
+    setSuggesting(true);
+    try {
+      const { data } = await api.post(`/ai/suggest-reply/${thread.id}`);
+      setReplyText(data.draft || "");
+      toast.success("Draft ready — review before sending");
+    } catch (e) {
+      toast.error(e.response?.data?.message || "Could not draft reply");
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  // AI: classify all un-categorized replies in one pass.
+  const classifyAll = async () => {
+    setClassifying(true);
+    try {
+      const { data } = await api.post("/ai/classify-pending");
+      toast.success(`Classified ${data.classified} repl${data.classified === 1 ? "y" : "ies"}`);
+      loadRows();
+    } catch (e) {
+      toast.error(e.response?.data?.message || "Classification failed");
+    } finally {
+      setClassifying(false);
+    }
+  };
+
   const markReplied = async (id) => {
     await api.post(`/replies/${id}/mark-replied`);
     toast.success("Marked as replied");
@@ -211,9 +242,14 @@ export default function FollowUps() {
             Last inbox check: {summary?.last_poll ? fmt(summary.last_poll) : "never"}
           </p>
         </div>
-        <button className="btn btn-ghost" onClick={sync} disabled={syncing}>
-          <IconClock /> {syncing ? "Checking inbox…" : "Sync now"}
-        </button>
+        <div className="flex gap-2">
+          <button className="btn btn-ghost" onClick={classifyAll} disabled={classifying}>
+            {classifying ? "Classifying…" : "✨ Classify replies"}
+          </button>
+          <button className="btn btn-ghost" onClick={sync} disabled={syncing}>
+            <IconClock /> {syncing ? "Checking inbox…" : "Sync now"}
+          </button>
+        </div>
       </div>
 
       {/* Summary */}
@@ -358,6 +394,11 @@ export default function FollowUps() {
                       <span className="badge bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
                         {fmt(r.replied_at)}
                       </span>
+                      {r.reply_category && (
+                        <span className="ml-1 badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                          {r.reply_category.replace("_", " ")}
+                        </span>
+                      )}
                       {r.reply_snippet && (
                         <div className="mt-1 max-w-xs truncate text-xs text-slate-400">
                           {r.reply_snippet}
@@ -444,6 +485,11 @@ export default function FollowUps() {
                     <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
                       <span className="font-semibold uppercase tracking-wide text-green-600 dark:text-green-400">
                         Reply from {thread.reply_from}
+                        {thread.reply_category && (
+                          <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium normal-case text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                            {thread.reply_category.replace("_", " ")}
+                          </span>
+                        )}
                       </span>
                       <span>{fmt(thread.replied_at)}</span>
                     </div>
@@ -457,9 +503,21 @@ export default function FollowUps() {
 
                 {/* Compose reply */}
                 <div className="card p-4">
-                  <label className="label">
-                    {thread.replied_at ? "Reply" : "Send a follow-up"}
-                  </label>
+                  <div className="mb-1 flex items-center justify-between">
+                    <label className="label mb-0">
+                      {thread.replied_at ? "Reply" : "Send a follow-up"}
+                    </label>
+                    {thread.replied_at && (
+                      <button
+                        className="btn btn-ghost px-2 py-1 text-xs"
+                        onClick={suggestReply}
+                        disabled={suggesting}
+                        title="Draft a reply with AI — you can edit before sending"
+                      >
+                        {suggesting ? "Drafting…" : "✨ Suggest with AI"}
+                      </button>
+                    )}
+                  </div>
                   <textarea
                     className="input min-h-[160px]"
                     placeholder="Type your message…"

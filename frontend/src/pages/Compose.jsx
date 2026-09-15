@@ -25,6 +25,8 @@ export default function Compose() {
   const [quota, setQuota] = useState(null); // { cap, used, remaining }
   const [capInfo, setCapInfo] = useState(null); // { toSend, held } | null
   const [pendingBatches, setPendingBatches] = useState([]);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiEditing, setAiEditing] = useState(null); // email currently being edited
   const evtRef = useRef(null);
   const cancelledRef = useRef(false);
 
@@ -264,6 +266,50 @@ export default function Compose() {
       return next;
     });
 
+  // ----- AI intros -----
+  // Generate the {{ai_intro}} text for each recipient. Results are merged into
+  // `rows` so they flow through the normal queue path — {{ai_intro}} in the
+  // template gets filled per recipient at send time. Nothing is sent here.
+  const generateIntros = async () => {
+    if (!rows.length) return toast.error("Import recipients first");
+    setAiBusy(true);
+    try {
+      const { data } = await api.post("/ai/generate-intros", { rows: selectedRows });
+      const byEmail = {};
+      for (const it of data.intros) byEmail[(it.email || "").toLowerCase()] = it.ai_intro;
+      setRows((prev) =>
+        prev.map((r) => {
+          const e = rowEmail(r);
+          return byEmail[e] !== undefined ? { ...r, ai_intro: byEmail[e] } : r;
+        })
+      );
+      if (data.failures) toast.info(`Generated. ${data.failures} failed — check those rows.`);
+      else toast.success(`Generated intros for ${data.intros.length} recipient(s)`);
+    } catch (e) {
+      toast.error(e.response?.data?.error || "Generation failed");
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const regenerateOne = async (row) => {
+    setAiBusy(true);
+    try {
+      const { data } = await api.post("/ai/generate-intros", { rows: [row] });
+      const intro = data.intros?.[0]?.ai_intro || "";
+      setRows((prev) => prev.map((r) => (rowEmail(r) === rowEmail(row) ? { ...r, ai_intro: intro } : r)));
+    } catch (e) {
+      toast.error("Regenerate failed");
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const setIntro = (email, text) =>
+    setRows((prev) => prev.map((r) => (rowEmail(r) === email ? { ...r, ai_intro: text } : r)));
+
+  const introCount = rows.filter((r) => r.ai_intro).length;
+
   const pct = progress ? Math.round((progress.done / progress.total) * 100) : 0;
 
   return (
@@ -356,6 +402,58 @@ export default function Compose() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )}
+
+            {rows.length > 0 && (
+              <div className="mt-5 rounded-lg border border-brand-200 bg-brand-50/40 p-4 dark:border-brand-900 dark:bg-brand-900/10">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold">AI personalized intros</div>
+                    <div className="text-xs text-slate-500">
+                      Fills the <code>{"{{ai_intro}}"}</code> placeholder per company. Review before sending.
+                      {introCount > 0 && ` · ${introCount}/${rows.length} ready`}
+                    </div>
+                  </div>
+                  <button className="btn btn-primary px-3 py-1.5 text-sm" onClick={generateIntros} disabled={aiBusy}>
+                    {aiBusy ? "Generating…" : introCount ? "Regenerate all" : "Generate intros"}
+                  </button>
+                </div>
+
+                {introCount > 0 && (
+                  <div className="mt-3 max-h-80 space-y-2 overflow-y-auto">
+                    {rows.filter((r) => !excluded.has(rowEmail(r))).map((r, i) => {
+                      const email = rowEmail(r);
+                      const editing = aiEditing === email;
+                      return (
+                        <div key={i} className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+                          <div className="mb-1 flex items-center justify-between">
+                            <span className="text-xs font-medium">{r.company_name || r.company || email}</span>
+                            <div className="flex gap-1">
+                              <button className="btn btn-ghost px-2 py-0.5 text-xs" onClick={() => regenerateOne(r)} disabled={aiBusy}>
+                                Regenerate
+                              </button>
+                              <button className="btn btn-ghost px-2 py-0.5 text-xs" onClick={() => setAiEditing(editing ? null : email)}>
+                                {editing ? "Done" : "Edit"}
+                              </button>
+                            </div>
+                          </div>
+                          {editing ? (
+                            <textarea
+                              className="input min-h-[80px] text-sm"
+                              value={r.ai_intro || ""}
+                              onChange={(e) => setIntro(email, e.target.value)}
+                            />
+                          ) : (
+                            <p className={`text-sm ${r.ai_intro ? "text-slate-600 dark:text-slate-300" : "text-red-500"}`}>
+                              {r.ai_intro || "No intro generated — will send with an empty {{ai_intro}}."}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>

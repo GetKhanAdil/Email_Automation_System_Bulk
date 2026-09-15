@@ -15,6 +15,16 @@ export default function Settings() {
     toast.success("Settings saved");
   };
 
+  const testGroqConn = async () => {
+    try {
+      await api.put("/settings", s);
+      const { data } = await api.post("/settings/test-groq");
+      toast.success(data.message);
+    } catch (e) {
+      toast.error(e.response?.data?.message || "Groq test failed");
+    }
+  };
+
   const test = async () => {
     setTesting(true);
     try {
@@ -94,6 +104,41 @@ export default function Settings() {
           </p>
         </div>
         <button className="btn btn-primary" onClick={save}>Save</button>
+      </div>
+
+      <div className="card space-y-4 p-5">
+        <h2 className="font-bold">AI Personalization (Groq)</h2>
+        <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+          Powers AI email intros and reply classification. Free key from
+          console.groq.com. The model is picked automatically from Groq's live
+          catalogue, so it keeps working when models are retired.
+        </div>
+        <div className="max-w-md">
+          <label className="label">Groq API Key</label>
+          <input
+            type="password"
+            className="input"
+            placeholder={s.has_groq_key ? "•••••••• (saved)" : "gsk_..."}
+            value={s.groq_api_key === "********" ? "" : (s.groq_api_key || "")}
+            onChange={(e) => setS({ ...s, groq_api_key: e.target.value })}
+          />
+        </div>
+        <div className="max-w-md">
+          <label className="label">Student batch description</label>
+          <textarea
+            className="input min-h-[70px]"
+            placeholder="graduating M.Tech (Applied AI) students skilled in AI, ML, NLP and LLMs"
+            value={s.batch_description || ""}
+            onChange={(e) => setS({ ...s, batch_description: e.target.value })}
+          />
+          <p className="mt-1 text-xs text-slate-400">
+            Given to the AI when writing intros, so it knows who it is offering.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button className="btn btn-primary" onClick={save}>Save</button>
+          <button className="btn btn-ghost" onClick={testGroqConn}>Test Groq</button>
+        </div>
       </div>
 
       <div className="card space-y-4 p-5">

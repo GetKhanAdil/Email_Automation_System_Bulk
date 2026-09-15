@@ -100,6 +100,9 @@ addColumnIfMissing("history", "reply_body", "TEXT");
 // Set when this row is a follow-up — carries the original Message-ID so the
 // follow-up threads under the first email instead of starting a new one.
 addColumnIfMissing("history", "in_reply_to", "TEXT");
+addColumnIfMissing("history", "ai_intro", "TEXT");
+addColumnIfMissing("history", "reply_category", "TEXT");
+addColumnIfMissing("history", "reply_cache_key", "TEXT");
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_history_message_id ON history(message_id);
@@ -139,6 +142,8 @@ const ensureSetting = db.prepare(`
   ["brochure_link", ""],
   ["bulk_footer", "off"],
   ["daily_limit", "150"],
+  ["groq_api_key", ""],
+  ["batch_description", "graduating M.Tech (Applied AI) students skilled in AI, ML, NLP and LLMs"],
 ].forEach(([key, value]) => ensureSetting.run(key, value, key));
 
 // ---- Seed sample templates if missing ----
