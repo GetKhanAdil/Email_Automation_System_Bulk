@@ -203,11 +203,43 @@ router.post("/check-duplicates", (req, res) => {
 });
 
 /**
+ * How many sends are left today.
+ * The cap is the whole account's daily ceiling (shared by all coordinators),
+ * so this counts every 'sent' row today, not just the current user's.
+ */
+function sentToday() {
+  return db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM history WHERE status = 'sent' AND date(sent_at) = date('now','localtime')"
+    )
+    .get().n;
+}
+
+function dailyCap() {
+  const s = getSettings();
+  const n = parseInt(s.daily_limit, 10);
+  return Number.isFinite(n) && n > 0 ? n : 150;
+}
+
+router.get("/quota", (req, res) => {
+  const cap = dailyCap();
+  const used = sentToday();
+  res.json({ cap, used, remaining: Math.max(0, cap - used) });
+});
+
+/**
  * Queue a batch. body: { templateId, rows, attachments, scheduledAt }
  * Creates history entries with status 'pending' and returns batchId.
  */
 router.post("/queue", (req, res) => {
-  const { templateId, rows = [], attachments = [], scheduledAt = null } = req.body;
+  const { templateId, rows = [], attachments = [], scheduledAt: rawSchedule = null } = req.body;
+
+  // datetime-local gives "2026-07-28T15:05". SQLite's datetime() wants
+  // "2026-07-28 15:05:00" — without this the scheduler's comparison never
+  // matches and the mail sits pending forever.
+  const scheduledAt = rawSchedule
+    ? rawSchedule.replace("T", " ").slice(0, 16) + ":00"
+    : null;
   const tpl = db.prepare("SELECT * FROM templates WHERE id = ?").get(templateId);
   if (!tpl) return res.status(404).json({ error: "Template not found" });
   if (!rows.length) return res.status(400).json({ error: "No recipients" });
@@ -215,6 +247,7 @@ router.post("/queue", (req, res) => {
   const s = getSettings();
   const batchId = randomUUID();
   const attachmentsJson = attachments.length ? JSON.stringify(attachments) : null;
+  const remainingToday = Math.max(0, dailyCap() - sentToday());
   const insert = db.prepare(`
     INSERT INTO history (student_name, email, company, role, subject, body, status, template_id, batch_id, scheduled_at, in_reply_to, attachments)
     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
@@ -246,7 +279,13 @@ router.post("/queue", (req, res) => {
   // Store attachments association on the batch (in-memory + we pass at send time)
   batchControl.set(batchId, { cancelled: false, attachments });
 
-  res.status(201).json({ batchId, queued: rows.length, scheduledAt });
+  res.status(201).json({
+    batchId,
+    queued: rows.length,
+    scheduledAt,
+    remainingToday, // how many of these can actually go out today
+    cappedToday: !scheduledAt && rows.length > remainingToday,
+  });
 });
 
 /**
@@ -282,10 +321,23 @@ router.get("/process/:batchId", async (req, res) => {
   req.on("close", () => { aborted = true; });
 
   const pending = db
-    .prepare("SELECT * FROM history WHERE batch_id = ? AND status IN ('pending','failed')")
+    .prepare("SELECT * FROM history WHERE batch_id = ? AND status IN ('pending','failed') ORDER BY id ASC")
     .all(batchId);
 
-  send("start", { total: pending.length });
+  // Daily cap: send only up to today's remaining allowance. The rest stay
+  // 'pending' in this same batch, ready to continue tomorrow (or when the user
+  // resumes) — this is the "store the leftovers" behaviour.
+  const cap = dailyCap();
+  const already = sentToday();
+  let budget = Math.max(0, cap - already);
+
+  send("start", { total: pending.length, budget, cap });
+
+  if (budget <= 0) {
+    send("capped", { sent: 0, held: pending.length, cap });
+    runningBatches.delete(batchId);
+    return res.end();
+  }
 
   let sent = 0;
   let failed = 0;
@@ -299,6 +351,12 @@ router.get("/process/:batchId", async (req, res) => {
     }
 
     if (aborted) break;
+
+    // Out of today's allowance — leave the rest pending for next time.
+    if (budget <= 0) {
+      send("capped", { sent, held: pending.length - i, cap });
+      break;
+    }
 
     const item = pending[i];
 
@@ -327,6 +385,7 @@ router.get("/process/:batchId", async (req, res) => {
          SET status = 'sent', sent_at = datetime('now'), error = NULL, message_id = ?
          WHERE id = ?`
       ).run(result?.messageId || null, item.id);
+      budget--;
       sent++;
       send("progress", { index: i + 1, total: pending.length, email: item.email, status: "sent" });
     } catch (err) {
@@ -449,6 +508,32 @@ router.post("/rows/restore", (req, res) => {
   })();
 
   res.json({ ok: true, restored });
+});
+
+/**
+ * Batches with recipients still waiting (held by the daily cap or not yet run).
+ * Immediate sends only — scheduled batches have their own panel.
+ */
+router.get("/pending-batches", (req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT h.batch_id,
+              COUNT(*)                        AS total,
+              SUM(h.status = 'pending')       AS pending,
+              SUM(h.status = 'sent')          AS sent,
+              MIN(h.created_at)               AS created_at,
+              MIN(h.subject)                  AS subject,
+              t.name                          AS template_name,
+              GROUP_CONCAT(DISTINCT h.company) AS companies
+       FROM history h
+       LEFT JOIN templates t ON t.id = h.template_id
+       WHERE h.scheduled_at IS NULL
+       GROUP BY h.batch_id
+       HAVING pending > 0
+       ORDER BY created_at DESC`
+    )
+    .all();
+  res.json(rows);
 });
 
 // Cancel a running batch

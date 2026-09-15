@@ -74,6 +74,29 @@ export default function Settings() {
       </div>
 
       <div className="card space-y-4 p-5">
+        <h2 className="font-bold">Sending Limits</h2>
+        <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+          Gmail caps daily sends (≈500 for personal, 2000 for Workspace). For cold
+          outreach, staying well below the cap protects the account's reputation.
+          On a shared mailbox this limit is counted across <b>all</b> coordinators.
+        </div>
+        <div className="max-w-xs">
+          <label className="label">Daily send limit</label>
+          <input
+            type="number"
+            min="1"
+            className="input"
+            value={s.daily_limit ?? "150"}
+            onChange={(e) => setS({ ...s, daily_limit: e.target.value })}
+          />
+          <p className="mt-1 text-xs text-slate-400">
+            Sends beyond this per day are held as Pending and continue later.
+          </p>
+        </div>
+        <button className="btn btn-primary" onClick={save}>Save</button>
+      </div>
+
+      <div className="card space-y-4 p-5">
         <h2 className="font-bold">Sender & Signature</h2>
         <div>
           <label className="label">Sender Name</label>

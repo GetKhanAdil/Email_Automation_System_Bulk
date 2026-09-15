@@ -37,7 +37,7 @@ function requeueStuckRows() {
        SET status = 'pending'
        WHERE status = 'sending'
          AND scheduled_at IS NOT NULL
-         AND datetime(created_at) <= datetime('now', '-${STUCK_AFTER_MINUTES} minutes')`
+         AND datetime(created_at) <= datetime('now', '-${STUCK_AFTER_MINUTES} minutes')` // created_at is UTC, so compare against UTC now
     )
     .run();
   if (res.changes) {
@@ -67,7 +67,7 @@ async function tick() {
         `SELECT * FROM history
          WHERE status = 'pending'
            AND scheduled_at IS NOT NULL
-           AND datetime(scheduled_at) <= datetime('now')
+           AND datetime(scheduled_at) <= datetime('now', 'localtime')
          ORDER BY scheduled_at ASC
          LIMIT ${BATCH_LIMIT}`
       )

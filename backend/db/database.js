@@ -138,6 +138,7 @@ const ensureSetting = db.prepare(`
   ["website", ""],
   ["brochure_link", ""],
   ["bulk_footer", "off"],
+  ["daily_limit", "150"],
 ].forEach(([key, value]) => ensureSetting.run(key, value, key));
 
 // ---- Seed sample templates if missing ----

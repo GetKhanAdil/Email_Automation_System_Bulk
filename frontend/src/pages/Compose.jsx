@@ -21,13 +21,23 @@ export default function Compose() {
   const [scheduled, setScheduled] = useState([]);
   const [editingTime, setEditingTime] = useState({}); // batchId -> datetime string
   const [batchId, setBatchId] = useState(null);
+  const [excluded, setExcluded] = useState(() => new Set()); // emails NOT to send
+  const [quota, setQuota] = useState(null); // { cap, used, remaining }
+  const [capInfo, setCapInfo] = useState(null); // { toSend, held } | null
+  const [pendingBatches, setPendingBatches] = useState([]);
   const evtRef = useRef(null);
   const cancelledRef = useRef(false);
 
   const loadScheduled = () =>
     api.get("/send/scheduled").then(({ data }) => setScheduled(data)).catch(() => {});
 
-  useEffect(() => { loadScheduled(); }, []);
+  const loadQuota = () =>
+    api.get("/send/quota").then(({ data }) => setQuota(data)).catch(() => {});
+
+  const loadPending = () =>
+    api.get("/send/pending-batches").then(({ data }) => setPendingBatches(data)).catch(() => {});
+
+  useEffect(() => { loadScheduled(); loadQuota(); loadPending(); }, []);
 
   useEffect(() => {
     api.get("/templates").then(({ data }) => {
@@ -109,8 +119,12 @@ export default function Compose() {
       toast.error("Select a template and import recipients first");
       return;
     }
+    if (!selectedRows.length) {
+      toast.error("All recipients are unchecked");
+      return;
+    }
     try {
-      const { data } = await api.post("/send/check-duplicates", { rows, days: 30 });
+      const { data } = await api.post("/send/check-duplicates", { rows: selectedRows, days: 30 });
       if (data.duplicates?.length) {
         setDupCheck(data);
         return; // wait for the user's decision
@@ -118,7 +132,7 @@ export default function Compose() {
     } catch {
       /* if the check fails, don't block sending */
     }
-    queueAndSend(rows);
+    queueAndSend(selectedRows);
   };
 
   const queueAndSend = async (rowsToSend) => {
@@ -142,6 +156,18 @@ export default function Compose() {
         toast.success(`Scheduled ${data.queued} emails for ${new Date(schedule).toLocaleString()}`);
         setSending(false);
         loadScheduled();
+        return;
+      }
+      if (data.cappedToday) {
+        // More recipients than today's remaining allowance. Show the split and
+        // let the user confirm sending today's portion now.
+        setCapInfo({
+          batchId: data.batchId,
+          total: data.queued,
+          toSend: data.remainingToday,
+          held: data.queued - data.remainingToday,
+        });
+        setSending(false);
         return;
       }
 
@@ -172,6 +198,18 @@ export default function Compose() {
       toast.success(`Done — ${d.sent} sent, ${d.failed} failed`);
       es.close();
       setSending(false);
+      loadQuota();
+      loadPending();
+    });
+    es.addEventListener("capped", (ev) => {
+      const d = JSON.parse(ev.data);
+      toast.info(
+        `Daily limit (${d.cap}) reached. ${d.held} recipient(s) held — continue tomorrow from Pending.`
+      );
+      es.close();
+      setSending(false);
+      loadQuota();
+      loadPending();
     });
     es.addEventListener("cancelled", () => {
       toast.info("Sending cancelled");
@@ -197,6 +235,12 @@ export default function Compose() {
     loadScheduled();
   };
 
+  const resumePending = (id, pendingCount) => {
+    setBatchId(id);
+    setSending(true);
+    runBatch(id, pendingCount);
+  };
+
   const cancelSend = async () => {
     if (!batchId) return;
     await api.post(`/send/cancel/${batchId}`);
@@ -209,6 +253,16 @@ export default function Compose() {
     setSending(true);
     runBatch(batchId, progress?.total || rows.length);
   };
+
+  const rowEmail = (r) => String(r.email || r.hr_email || "").trim().toLowerCase();
+  const selectedRows = rows.filter((r) => !excluded.has(rowEmail(r)));
+
+  const toggleRow = (email) =>
+    setExcluded((s) => {
+      const next = new Set(s);
+      next.has(email) ? next.delete(email) : next.add(email);
+      return next;
+    });
 
   const pct = progress ? Math.round((progress.done / progress.total) * 100) : 0;
 
@@ -257,6 +311,53 @@ export default function Compose() {
                 <span className="badge bg-amber-100 text-amber-700">{importInfo.duplicates} duplicates removed</span>
               </div>
             )}
+
+            {rows.length > 0 && (
+              <div className="mt-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-sm font-medium">
+                    {selectedRows.length} of {rows.length} selected
+                  </span>
+                  <div className="flex gap-2 text-xs">
+                    <button className="btn btn-ghost px-2 py-1" onClick={() => setExcluded(new Set())}>
+                      Select all
+                    </button>
+                    <button
+                      className="btn btn-ghost px-2 py-1"
+                      onClick={() => setExcluded(new Set(rows.map(rowEmail)))}
+                    >
+                      Deselect all
+                    </button>
+                  </div>
+                </div>
+                <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                  <table className="w-full text-sm">
+                    <tbody>
+                      {rows.map((r, i) => {
+                        const email = rowEmail(r);
+                        const on = !excluded.has(email);
+                        return (
+                          <tr
+                            key={i}
+                            className="border-b border-slate-100 last:border-0 dark:border-slate-800"
+                          >
+                            <td className="w-10 p-2">
+                              <input type="checkbox" checked={on} onChange={() => toggleRow(email)} />
+                            </td>
+                            <td className="p-2">
+                              <div className={on ? "font-medium" : "font-medium text-slate-400 line-through"}>
+                                {r.company_name || r.company || "—"}
+                              </div>
+                              <div className="text-xs text-slate-400">{email}</div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Step 3: Attachments */}
@@ -285,6 +386,30 @@ export default function Compose() {
           {/* Step 4: Schedule + actions */}
           <div className="card p-5">
             <h2 className="mb-3 font-bold">4. Send</h2>
+
+            {quota && (
+              <div className="mb-4">
+                <div className="mb-1 flex justify-between text-xs text-slate-500">
+                  <span>Today: {quota.used} / {quota.cap} sent</span>
+                  <span className={quota.remaining === 0 ? "text-red-500 font-medium" : ""}>
+                    {quota.remaining} left
+                  </span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                  <div
+                    className={`h-full ${quota.remaining === 0 ? "bg-red-500" : "bg-brand-500"}`}
+                    style={{ width: `${Math.min(100, (quota.used / quota.cap) * 100)}%` }}
+                  />
+                </div>
+                {selectedRows.length > quota.remaining && quota.remaining > 0 && (
+                  <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                    {selectedRows.length} selected, but only {quota.remaining} can go today.
+                    The rest will be held.
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="flex flex-wrap items-end gap-3">
               <div>
                 <label className="label">Schedule for later (optional)</label>
@@ -292,11 +417,61 @@ export default function Compose() {
                   onChange={(e) => setSchedule(e.target.value)} />
               </div>
               <button className="btn btn-ghost" onClick={doPreview}>Preview</button>
-              <button className="btn btn-primary" onClick={startSend} disabled={sending}>
-                {schedule ? <><IconClock /> Schedule</> : <><IconSend /> Send All</>}
+              <button className="btn btn-primary" onClick={startSend} disabled={sending || !selectedRows.length}>
+                {schedule
+                  ? <><IconClock /> Schedule ({selectedRows.length})</>
+                  : <><IconSend /> Send ({selectedRows.length})</>}
               </button>
             </div>
           </div>
+
+          {/* Pending queue (held by daily cap) */}
+          {pendingBatches.length > 0 && (
+            <div className="card p-5">
+              <h2 className="mb-1 flex items-center gap-2 font-bold">
+                <IconClock /> Pending — held recipients ({pendingBatches.length} batch)
+              </h2>
+              <p className="mb-3 text-sm text-slate-500">
+                Recipients held by the daily limit. Continue when you have allowance left today,
+                or tomorrow.
+              </p>
+              <div className="space-y-2">
+                {pendingBatches.map((b) => (
+                  <div
+                    key={b.batch_id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium">
+                        {b.pending} waiting
+                        <span className="ml-2 text-sm font-normal text-slate-500">
+                          {b.sent} already sent · {b.template_name || "—"}
+                        </span>
+                      </div>
+                      {b.companies && (
+                        <div className="truncate text-xs text-slate-400">
+                          {b.companies.split(",").slice(0, 5).join(", ")}
+                          {b.companies.split(",").length > 5 && " …"}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      className="btn btn-primary px-3 py-1 text-sm"
+                      onClick={() => resumePending(b.batch_id, b.pending)}
+                      disabled={sending || (quota && quota.remaining === 0)}
+                    >
+                      <IconSend /> Continue
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {quota && quota.remaining === 0 && (
+                <p className="mt-2 text-xs text-red-500">
+                  Daily limit reached — continue tomorrow.
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Right: progress + preview */}
@@ -427,6 +602,44 @@ export default function Compose() {
         </div>
       )}
 
+      {/* Daily-cap split confirmation */}
+      {capInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="card w-full max-w-md p-6">
+            <h2 className="text-lg font-extrabold">More than today's limit</h2>
+            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+              You queued <strong>{capInfo.total}</strong> recipients, but only{" "}
+              <strong>{capInfo.toSend}</strong> can be sent today.
+            </p>
+            <p className="mt-1 text-sm text-slate-500">
+              The remaining <strong>{capInfo.held}</strong> will be held in Pending. You can
+              continue them tomorrow — nothing is lost.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                className="btn btn-ghost"
+                onClick={() => { setCapInfo(null); loadPending(); }}
+              >
+                Not now
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  const id = capInfo.batchId;
+                  const n = capInfo.toSend;
+                  setCapInfo(null);
+                  setBatchId(id);
+                  setSending(true);
+                  runBatch(id, n);
+                }}
+              >
+                Send {capInfo.toSend} now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Duplicate-contact confirmation */}
       {dupCheck && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -462,23 +675,23 @@ export default function Compose() {
               </button>
               <button
                 className="btn btn-ghost"
-                onClick={() => queueAndSend(rows)}
+                onClick={() => queueAndSend(selectedRows)}
                 title="Send to everyone, including those contacted recently"
               >
-                Send to all ({rows.length})
+                Send to all ({selectedRows.length})
               </button>
               <button
                 className="btn btn-primary"
                 onClick={() => {
                   const skip = new Set(dupCheck.duplicates.map((d) => d.email.toLowerCase()));
-                  const unique = rows.filter((r) => {
+                  const unique = selectedRows.filter((r) => {
                     const e = String(r.email || r.hr_email || "").trim().toLowerCase();
                     return e && !skip.has(e);
                   });
                   queueAndSend(unique);
                 }}
               >
-                Skip duplicates ({rows.length - dupCheck.duplicates.length})
+                Skip duplicates ({selectedRows.length - dupCheck.duplicates.length})
               </button>
             </div>
           </div>
